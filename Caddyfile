@@ -1,0 +1,25 @@
+filmshake.co.uk, www.filmshake.co.uk {
+    encode gzip zstd
+
+    @www host www.filmshake.co.uk
+    redir @www https://filmshake.co.uk{uri}
+
+    # API under /predictions/api/*
+    handle /predictions/api/* {
+        uri replace /predictions ""
+        reverse_proxy backend:5000
+    }
+
+    # Frontend under /predictions/*
+    handle /predictions* {
+        uri strip_prefix /predictions
+        root * /srv/public
+        try_files {path} {path}/ /index.html
+        file_server
+    }
+
+    @root path /
+    redir @root /predictions
+
+    tls youremail@example.com
+}
