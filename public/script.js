@@ -1,194 +1,193 @@
-// ---------- Elements ----------
-const form = document.getElementById('filmForm');
-const msgDiv = document.getElementById('msg');
-const progressSection = document.getElementById('progressSection');
-const progressInner = document.getElementById('progressInner');
-const progressText = document.getElementById('progressText');
-const resultsDiv = document.getElementById('results');
-const savePdfBtn = document.getElementById('savePdfBtn');
+// public/script.js
 
-// Keep last result for PDF (so HTML == PDF)
-let latestResult = null;
+// ---------- Config: dynamic API base ----------
+// In production your app is mounted at /predictions; in dev it's at /.
+const APP_PREFIX = "/predictions";
+const onPredictionsPath =
+  window.location.pathname === APP_PREFIX ||
+  window.location.pathname.startsWith(`${APP_PREFIX}/`);
+const API_BASE = onPredictionsPath ? `${APP_PREFIX}/api` : "/api";
 
-// ---------- Helpers ----------
-function getPayloadFromForm() {
-  const data = Object.fromEntries(new FormData(form));
-  data.currency = form.currency.value;
-  data.support_needed = Array.from(
-    form.querySelectorAll('input[name="support_needed"]:checked')
-  ).map(cb => cb.value);
-  return data;
+// ---------- DOM ----------
+const form = document.getElementById("filmForm");
+const resultsDiv = document.getElementById("results");
+const msg = document.getElementById("msg");
+const savePdfBtn = document.getElementById("savePdfBtn");
+const progressSection = document.getElementById("progressSection");
+const progressInner = document.getElementById("progressInner");
+const progressText = document.getElementById("progressText");
+
+let lastResponse = null;
+
+// ---------- UI helpers ----------
+function setProgress(p, text) {
+  progressSection.style.display = "block";
+  progressInner.style.width = `${p}%`;
+  progressText.textContent = text || "";
 }
 
-/* Make “Type/Support” human-readable in HTML (handles dicts/lists/strings) */
-function formatSupport(s) {
+function showError(e) {
+  const text =
+    (e && e.message) ||
+    (typeof e === "string" ? e : "Something went wrong. Please try again.");
+  msg.textContent = text;
+}
+
+// Defensive JSON parser: if server returns HTML (e.g., index.html), show snippet
+async function parseJsonOrThrow(resp) {
+  const ct = resp.headers.get("content-type") || "";
+  const raw = await resp.text();
+  if (!ct.includes("application/json")) {
+    const snippet = raw.slice(0, 200);
+    throw new Error(
+      `Non-JSON from server (status ${resp.status}). First 200 chars:\n${snippet}`
+    );
+  }
   try {
-    if (!s) return '';
-    if (typeof s === 'string') return s;
-    if (Array.isArray(s)) {
-      return s.map(x => typeof x === 'object'
-        ? [x.type, x.topic].filter(Boolean).join(' — ')
-        : String(x)
-      ).join('; ');
-    }
-    if (typeof s === 'object') {
-      return [s.type, s.topic].filter(Boolean).join(' — ') || JSON.stringify(s);
-    }
-    return String(s);
-  } catch { return String(s || ''); }
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("Server returned invalid JSON.");
+  }
 }
 
-function renderResults(result) {
-  // 1) LLM summary
-  let summaryHtml = '';
-  if (result.llm_summary) {
-    summaryHtml = `
-      <div class="ai-summary-box fade-in">
-        <h3>AI Recommendation</h3>
-        ${result.llm_summary.replace(/\n/g, '<br>')}
-      </div>`;
+// ---------- Form data ----------
+function buildPayloadFromForm() {
+  const data = new FormData(form);
+
+  // Validate amount early on the client
+  const amtStr = data.get("amount_requested");
+  const amt = Number(amtStr);
+  if (!Number.isFinite(amt) || amt < 0) {
+    throw new Error("Please enter a valid non-negative budget amount.");
   }
 
-  // 2) Results table (colgroup mirrors PDF proportions)
-  let tableHtml = '';
-  if (Array.isArray(result.recommended_funds) && result.recommended_funds.length) {
-    tableHtml = `
-      <div class="results-table-box fade-in">
-        <table>
-          <colgroup>
-            <col style="width: 4.5%;">   <!-- # -->
-            <col style="width: 18%;">    <!-- Fund Name -->
-            <col style="width: 18%;">    <!-- Organization -->
-            <col style="width: 24%;">    <!-- Type/Support -->
-            <col style="width: 12%;">    <!-- Location -->
-            <col style="width: 10%;">    <!-- Status -->
-            <col style="width: 10.5%;">  <!-- Amount -->
-            <col style="width: 3%;">     <!-- Link -->
-          </colgroup>
-          <thead>
-            <tr>
-                <th>#</th>
-                <th>Fund Name</th>
-                <th>Organization</th>
-                <th>Type / Support</th>
-                <th>Location</th>
-                <th>Status</th>
-                <th>Amount</th>
-                <th>Link</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${result.recommended_funds.map((fund, i) => `
-              <tr>
-                <td>${i + 1}</td>
-                <td>${fund.fund_name || ''}</td>
-                <td>${fund.organization || ''}</td>
-                <td>${formatSupport(fund.support_type_and_topic)}</td>
-                <td>${fund.location || ''}</td>
-                <td>${fund.status || ''}</td>
-                <td>${(fund.amount && String(fund.amount).trim() !== '') ? fund.amount : 'N/A'}</td>
-                <td>${fund.link ? `<a href="${fund.link}" target="_blank" aria-label="Open fund page">↗</a>` : ''}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>`;
-  }
+  const support = Array.from(
+    document.querySelectorAll('input[name="support_needed"]:checked')
+  ).map((cb) => cb.value);
 
-  resultsDiv.innerHTML = (summaryHtml || tableHtml)
-    ? `<div class="results-flex">${summaryHtml}${tableHtml}</div>`
-    : "<div class='error fade-in'>No results to display.</div>";
-
-  savePdfBtn.style.display = (summaryHtml || tableHtml) ? 'block' : 'none';
+  return {
+    project_title: data.get("project_title"),
+    project_location: data.get("project_location"),
+    project_type: data.get("project_type"),
+    project_desc: data.get("project_desc"),
+    project_stage: data.get("project_stage"),
+    currency: data.get("currency"),
+    amount_requested: amt,
+    support_needed: support,
+  };
 }
 
-// ---------- Submit handler: gets content from Python (/submit) ----------
-form.onsubmit = async (e) => {
+// ---------- Event: Submit (recommendations) ----------
+form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  msgDiv.textContent = '';
-  msgDiv.className = '';
-  resultsDiv.innerHTML = '';
-  savePdfBtn.style.display = 'none';
+  msg.textContent = "";
+  resultsDiv.innerHTML = "";
+  savePdfBtn.style.display = "none";
+  setProgress(8, "Preparing…");
 
-  // progress UI
-  progressSection.style.display = 'flex';
-  progressInner.style.width = '0';
-  progressText.textContent = 'Processing...';
-  let progress = 0;
-  const interval = setInterval(() => {
-    progress = Math.min(99, progress + Math.random() * 4.3);
-    progressInner.style.width = progress + '%';
-    progressText.textContent = 'Matching: ' + Math.round(progress) + '%';
-  }, 170);
-
+  let payload;
   try {
-    const payload = getPayloadFromForm();
-    const res = await fetch('/submit', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload)
-    });
-
-    clearInterval(interval);
-    progressInner.style.width = '100%';
-    progressText.textContent = 'Done!';
-    setTimeout(() => progressSection.style.display = 'none', 750);
-
-    const result = await res.json();
-    if (!res.ok) {
-      msgDiv.textContent = result.error || 'Submission failed!';
-      msgDiv.className = 'error fade-in';
-      return;
-    }
-
-    latestResult = result; // keep what we showed on screen
-
-    msgDiv.textContent = '✅ Successfully submitted!';
-    msgDiv.className = 'success fade-in';
-    renderResults(result);
-
+    payload = buildPayloadFromForm();
   } catch (err) {
-    clearInterval(interval);
-    progressInner.style.width = '100%';
-    progressText.textContent = 'Error';
-    setTimeout(() => progressSection.style.display = 'none', 950);
-    msgDiv.textContent = 'Server error!';
-    msgDiv.className = 'error fade-in';
-  }
-};
-
-// ---------- PDF button: asks Python to generate the PDF (/export_pdf) ----------
-savePdfBtn.onclick = async () => {
-  const payload = getPayloadFromForm();
-  if (latestResult) {
-    payload.llm_summary = latestResult.llm_summary || '';
-    payload.recommended_funds = latestResult.recommended_funds || [];
+    showError(err);
+    progressSection.style.display = "none";
+    return;
   }
 
   try {
-    const res = await fetch('/export_pdf', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload)
+    setProgress(25, "Matching funds…");
+    const r = await fetch(`${API_BASE}/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      alert(`Could not generate PDF. ${errText || 'Check server logs.'}`);
-      return;
+    const j = await parseJsonOrThrow(r);
+    if (!r.ok) throw new Error(j.error || "Failed to fetch recommendations.");
+    lastResponse = j;
+
+    // Render results
+    const list = j.recommended_funds || [];
+    let html = `<div class="summary"><h3>AI Recommendation</h3><p>${(j.llm_summary || "")
+      .replace(/\n/g, "<br/>")}</p></div>`;
+
+    html += `<table class="results"><thead><tr>
+              <th>#</th><th>Fund</th><th>Organization</th><th>Type / Support</th>
+              <th>Location</th><th>Status</th><th>Amount</th><th>Link</th></tr></thead><tbody>`;
+
+    list.forEach((f, i) => {
+      html += `<tr>
+        <td>${i + 1}</td>
+        <td>${f.fund_name || ""}</td>
+        <td>${f.organization || ""}</td>
+        <td>${f.support_type_and_topic || ""}</td>
+        <td>${f.location || ""}</td>
+        <td>${f.status || ""}</td>
+        <td>${f.amount || "N/A"}</td>
+        <td>${f.link ? `<a href="${f.link}" target="_blank" rel="noopener">Open</a>` : ""}</td>
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+    resultsDiv.innerHTML = html;
+
+    setProgress(90, "Ready");
+    savePdfBtn.style.display = "inline-block";
+  } catch (err) {
+    console.error(err);
+    showError(err);
+    setProgress(100, "Error");
+  } finally {
+    setTimeout(() => (progressSection.style.display = "none"), 800);
+  }
+});
+
+// ---------- Event: Save PDF ----------
+savePdfBtn.addEventListener("click", async () => {
+  if (!lastResponse) return;
+
+  let payload;
+  try {
+    payload = buildPayloadFromForm();
+  } catch (err) {
+    showError(err);
+    return;
+  }
+  payload.recommended_funds = lastResponse.recommended_funds || [];
+  payload.llm_summary = lastResponse.llm_summary || "";
+
+  try {
+    const r = await fetch(`${API_BASE}/export_pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    // Expect a PDF; if not, surface the HTML/text
+    const ct = r.headers.get("content-type") || "";
+    if (!r.ok) {
+      const raw = await r.text().catch(() => "");
+      throw new Error(
+        raw || `PDF export failed (status ${r.status}). Please try again.`
+      );
+    }
+    if (!ct.includes("application/pdf")) {
+      const raw = await r.text().catch(() => "");
+      throw new Error(
+        `Server did not return a PDF. First 200 chars:\n${raw.slice(0, 200)}`
+      );
     }
 
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const blob = await r.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
     a.href = url;
-    a.download = 'funding_results.pdf';
+    a.download = "funding_results.pdf";
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+    window.URL.revokeObjectURL(url);
   } catch (e) {
     console.error(e);
-    alert('Network error while generating PDF.');
+    showError(e);
   }
-};
+});
