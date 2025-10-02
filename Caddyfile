@@ -1,108 +1,21 @@
-{
-  # (Optional) ACME email for cert renewals/alerts
-  email youremail@example.com
-
-  # Good defaults
-  auto_https on
-  servers {
-    metrics
-  }
-}
-
-# Serve both apex and www, force redirect to apex
-filmshake.co.uk, www.filmshake.co.uk {
+predictions.filmshake.co.uk {
   encode gzip zstd
 
-  # --- Redirect www -> apex ---
-  @www host www.filmshake.co.uk
-  redir @www https://filmshake.co.uk{uri}
-
-  # --- Root path -> /predictions (your app mount) ---
-  @root path /
-  redir @root /predictions
-
-  # =========================
-  # API (proxied to Flask)
-  # =========================
-
-  # Support calls to /api/* (handy for local or future use)
+  # API at /api/*
   handle_path /api/* {
     reverse_proxy backend:5000
   }
 
-  # Primary: your deployed app uses /predictions/api/*
-  handle_path /predictions/api/* {
-    reverse_proxy backend:5000
-  }
-
-  # (Optional) CORS on API — uncomment if you need cross-origin calls
-  # header /predictions/api/* {
-  #   Access-Control-Allow-Origin "*"
-  #   Access-Control-Allow-Methods "GET, POST, OPTIONS"
-  #   Access-Control-Allow-Headers "Content-Type, Authorization"
-  # }
-
-  # =========================
-  # Frontend (static SPA)
-  # =========================
-  handle_path /predictions/* {
+  # Static app at root /*
+  handle_path /* {
     root * /srv/public
     try_files {path} {path}/ /index.html
     file_server
-
-    # Caching strategy: cache assets hard, keep HTML fresh
-    header {
-      # Long cache for static assets (adjust patterns to your build outputs)
-      @assets {
-        path *.js *.css *.mjs *.map *.png *.jpg *.jpeg *.svg *.webp *.gif *.ico *.woff *.woff2
-      }
-      @html path /index.html
-
-      Cache-Control @assets "public, max-age=31536000, immutable"
-      Cache-Control @html   "no-cache"
-    }
   }
 
-  # =========================
-  # Security headers
-  # =========================
-  header {
-    # Basic security hardening
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "DENY"
-    Referrer-Policy "strict-origin-when-cross-origin"
-    Permissions-Policy "camera=(), microphone=(), geolocation=()"
-
-    # Minimal CSP (adjust if you add external CDNs)
-    # This allows inline styles only if you rely on them; best to avoid 'unsafe-inline' in production.
-    Content-Security-Policy "
-      default-src 'self';
-      img-src 'self' data:;
-      style-src 'self' 'unsafe-inline';
-      script-src 'self';
-      connect-src 'self';
-      font-src 'self' data:;
-      frame-ancestors 'none';
-      base-uri 'self';
-      form-action 'self'
-    "
+  # Health
+  @health {
+    path /ok
   }
-
-  # Health check (optional): serve a simple ok from the static site
-  @health path /predictions/ok
   respond @health "ok" 200
 }
-
-# ============
-# Upstreams
-# ============
-# These names must match your docker-compose service names or upstream hosts.
-
-# Example Docker Compose service names:
-# - backend: Flask/Gunicorn container (exposes 5000)
-# - caddy:   this container
-# - ollama:  your LLM container (not directly exposed here)
-
-# If you're running Caddy outside Docker on the same host,
-# you can reverse_proxy to 127.0.0.1:5000 instead:
-# handle_path /api/* { reverse_proxy 127.0.0.1:5000 }
